@@ -1,5 +1,6 @@
 package com.example.bugtracker.data.repository
 
+import android.util.Log
 import com.example.bugtracker.data.local.IssueDao
 import com.example.bugtracker.data.local.IssueEntity
 import com.example.bugtracker.data.local.IssuePriority
@@ -12,6 +13,7 @@ import com.example.bugtracker.data.remote.toEntity
 import java.io.IOException
 import java.util.UUID
 import kotlinx.coroutines.flow.Flow
+import okhttp3.ResponseBody.Companion.toResponseBody
 import retrofit2.HttpException
 
 class IssueRepository(
@@ -73,6 +75,7 @@ class IssueRepository(
             val pulledCount = pullRemoteIssues()
             SyncResult.Success(pushedCount, pulledCount)
         } catch (e: IOException) {
+            Log.e(TAG, "Network error during sync", e)
             SyncResult.Failure(
                 retryable = true,
                 message = "Network unavailable",
@@ -81,8 +84,10 @@ class IssueRepository(
         } catch (e: HttpException) {
             val retryable = e.code() == 408 || e.code() == 425 ||
                 e.code() == 429 || e.code() in 500..599
+            Log.e(TAG, "HTTP error ${e.code()} during sync", e)
             SyncResult.Failure(retryable, "HTTP ${e.code()}", e)
         } catch (e: Exception) {
+            Log.e(TAG, "Unexpected error during sync", e)
             SyncResult.Failure(
                 retryable = false,
                 message = e.message ?: "Synchronization failed",
@@ -94,13 +99,17 @@ class IssueRepository(
     private suspend fun pushPendingChanges(): Int {
         var count = 0
         for (issue in dao.getPendingIssues()) {
-            when (issue.pendingOperation) {
-                PendingOperation.CREATE -> pushCreate(issue)
-                PendingOperation.UPDATE -> pushUpdate(issue)
-                PendingOperation.DELETE -> pushDelete(issue)
-                PendingOperation.NONE -> dao.markAsSynced(issue.id)
+            try {
+                when (issue.pendingOperation) {
+                    PendingOperation.CREATE -> pushCreate(issue)
+                    PendingOperation.UPDATE -> pushUpdate(issue)
+                    PendingOperation.DELETE -> pushDelete(issue)
+                    PendingOperation.NONE -> dao.markAsSynced(issue.id)
+                }
+                count++
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to push issue ${issue.id}", e)
             }
-            count++
         }
         return count
     }
@@ -141,7 +150,7 @@ class IssueRepository(
         throw HttpException(
             retrofit2.Response.error<Unit>(
                 statusCode,
-                okhttp3.ResponseBody.create(null, "Synchronization failed.")
+                "Synchronization failed.".toResponseBody()
             )
         )
     }
@@ -163,5 +172,9 @@ class IssueRepository(
         require(title.length <= 120) { "The issue title cannot exceed 120 characters." }
         require(description.isNotBlank()) { "The issue description cannot be empty." }
         require(description.length <= 5000) { "The issue description cannot exceed 5,000 characters." }
+    }
+
+    companion object {
+        private const val TAG = "IssueRepository"
     }
 }
